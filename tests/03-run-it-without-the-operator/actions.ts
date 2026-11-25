@@ -1,6 +1,11 @@
 import { BN } from "@coral-xyz/anchor";
-import { Keypair, PublicKey } from "@solana/web3.js";
 import { TOKEN_PROGRAM_ID } from "@solana/spl-token";
+import {
+  Ed25519Program,
+  Keypair,
+  PublicKey,
+  SYSVAR_INSTRUCTIONS_PUBKEY,
+} from "@solana/web3.js";
 
 import { sendIxs } from "../helpers";
 import { RewardsFixture } from "./fixture";
@@ -17,34 +22,54 @@ export const accrue = async (
   await sendIxs(env.context, [env.payer], ix);
 };
 
-export const payReward = async (
+export const claim = async (
   env: RewardsFixture,
+  caller: Keypair,
   owner: PublicKey,
   ownerTokens: PublicKey,
+  callerTokens: PublicKey,
 ) => {
   const ix = await env.program.methods
-    .payReward()
+    .claim()
     .accountsPartial({
-      admin: env.payer.publicKey,
+      caller: caller.publicKey,
       user: env.userAccount(owner),
       mint: env.mint,
       userTokens: ownerTokens,
+      callerTokens,
       tokenProgram: TOKEN_PROGRAM_ID,
     })
     .instruction();
-  await sendIxs(env.context, [env.payer], ix);
+  await sendIxs(env.context, [caller], ix);
 };
 
 export const setPrice = async (
   env: RewardsFixture,
   price: BN,
-  signer: Keypair = env.bot,
+  publishTime?: BN,
+  oracleSigner: Keypair = env.oracle,
+  submitter: Keypair = env.stranger,
 ) => {
-  const ix = await env.program.methods
-    .setPrice(price)
-    .accountsPartial({ bot: signer.publicKey })
+  const clock = await env.context.banksClient.getClock();
+  const timestamp = publishTime ?? new BN(clock.unixTimestamp.toString());
+
+  const message = Buffer.alloc(16);
+  price.toArrayLike(Buffer, "le", 8).copy(message, 0);
+  timestamp.toArrayLike(Buffer, "le", 8).copy(message, 8);
+
+  const ed25519Ix = Ed25519Program.createInstructionWithPrivateKey({
+    privateKey: oracleSigner.secretKey,
+    message,
+  });
+
+  const setPriceIx = await env.program.methods
+    .setPrice()
+    .accountsPartial({
+      instructions: SYSVAR_INSTRUCTIONS_PUBKEY,
+    })
     .instruction();
-  await sendIxs(env.context, [signer], ix);
+
+  await sendIxs(env.context, [submitter], ed25519Ix, setPriceIx);
 };
 
 export const buy = async (

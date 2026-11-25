@@ -12,4 +12,8 @@ pub enum RewardsError {
     NotEd25519,
     #[msg("The Ed25519 instruction has an unexpected layout")]
     MalformedEd25519,
+    #[msg("Invalid oracle signer")]
+    InvalidOracle,
+    #[msg("Price timestamp is in the future or older than current price")]
+    InvalidPriceTimestamp,
 }
