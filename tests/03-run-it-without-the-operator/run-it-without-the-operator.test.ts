@@ -1,10 +1,14 @@
 import { assert } from "chai";
 import { BN } from "@coral-xyz/anchor";
-import { LAMPORTS_PER_SOL } from "@solana/web3.js";
+import {
+  Ed25519Program,
+  LAMPORTS_PER_SOL,
+  SYSVAR_INSTRUCTIONS_PUBKEY,
+} from "@solana/web3.js";
 
-import { oneToken, toBN, tokenBalance } from "../helpers";
+import { oneToken, sendIxs, toBN, tokenBalance } from "../helpers";
 import { RewardsFixture, setupRewards } from "./fixture";
-import { accrue, buy, claim, setPrice } from "./actions";
+import { accrue, buy, claim } from "./actions";
 
 describe("03-run-it-without-the-operator", () => {
   let env: RewardsFixture;
@@ -55,9 +59,31 @@ describe("03-run-it-without-the-operator", () => {
     assert.isTrue(failed, "double claim should fail");
   });
 
-  it("updates price via oracle Ed25519 signature and completes a buy without the bot", async () => {
-    // Stranger submits an oracle-signed price (0.01 SOL per token) without the bot signing
-    await setPrice(env, toBN(LAMPORTS_PER_SOL / 100));
+  it("constructs and verifies an oracle-signed price update and completes a buy without the operator", async () => {
+    const price = toBN(LAMPORTS_PER_SOL / 100); // 0.01 SOL per whole token
+    const clock = await env.context.banksClient.getClock();
+    const publishTime = new BN(clock.unixTimestamp.toString());
+
+    // Build the 16-byte oracle payload (price: u64 LE || publish_time: i64 LE)
+    const message = Buffer.alloc(16);
+    price.toArrayLike(Buffer, "le", 8).copy(message, 0);
+    publishTime.toArrayLike(Buffer, "le", 8).copy(message, 8);
+
+    // Sign with the off-chain oracle keypair via the Ed25519 native program
+    const ed25519Ix = Ed25519Program.createInstructionWithPrivateKey({
+      privateKey: env.oracle.secretKey,
+      message,
+    });
+
+    const setPriceIx = await env.program.methods
+      .setPrice()
+      .accountsPartial({
+        instructions: SYSVAR_INSTRUCTIONS_PUBKEY,
+      })
+      .instruction();
+
+    // Stranger submits both instructions without any bot/operator signature
+    await sendIxs(env.context, [env.stranger], ed25519Ix, setPriceIx);
 
     await buy(
       env,
@@ -72,25 +98,62 @@ describe("03-run-it-without-the-operator", () => {
     );
   });
 
-  it("rejects stale or wrong-oracle price updates", async () => {
+  it("rejects stale or wrong-oracle signed price updates", async () => {
+    const price = toBN(LAMPORTS_PER_SOL / 100);
     const clock = await env.context.banksClient.getClock();
     const staleTime = new BN(clock.unixTimestamp.toString()).subn(120);
 
+    const staleMessage = Buffer.alloc(16);
+    price.toArrayLike(Buffer, "le", 8).copy(staleMessage, 0);
+    staleTime.toArrayLike(Buffer, "le", 8).copy(staleMessage, 8);
+
+    const staleEd25519Ix = Ed25519Program.createInstructionWithPrivateKey({
+      privateKey: env.oracle.secretKey,
+      message: staleMessage,
+    });
+    const staleSetPriceIx = await env.program.methods
+      .setPrice()
+      .accountsPartial({
+        instructions: SYSVAR_INSTRUCTIONS_PUBKEY,
+      })
+      .instruction();
+
     let staleFailed = false;
     try {
-      await setPrice(env, toBN(LAMPORTS_PER_SOL / 100), staleTime);
+      await sendIxs(
+        env.context,
+        [env.stranger],
+        staleEd25519Ix,
+        staleSetPriceIx,
+      );
     } catch {
       staleFailed = true;
     }
-    assert.isTrue(staleFailed, "stale price update should fail");
+    assert.isTrue(staleFailed, "stale signed price update should fail");
+
+    const freshTime = new BN(clock.unixTimestamp.toString());
+    const validMessage = Buffer.alloc(16);
+    price.toArrayLike(Buffer, "le", 8).copy(validMessage, 0);
+    freshTime.toArrayLike(Buffer, "le", 8).copy(validMessage, 8);
+
+    const wrongOracleIx = Ed25519Program.createInstructionWithPrivateKey({
+      privateKey: env.stranger.secretKey,
+      message: validMessage,
+    });
+    const wrongOracleSetPriceIx = await env.program.methods
+      .setPrice()
+      .accountsPartial({
+        instructions: SYSVAR_INSTRUCTIONS_PUBKEY,
+      })
+      .instruction();
 
     let wrongOracleFailed = false;
     try {
-      await setPrice(
-        env,
-        toBN(LAMPORTS_PER_SOL / 100),
-        undefined,
-        env.stranger,
+      await sendIxs(
+        env.context,
+        [env.stranger],
+        wrongOracleIx,
+        wrongOracleSetPriceIx,
       );
     } catch {
       wrongOracleFailed = true;
