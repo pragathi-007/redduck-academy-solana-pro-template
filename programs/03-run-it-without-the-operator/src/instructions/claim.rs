@@ -4,7 +4,7 @@ use anchor_spl::token::{transfer_checked, Mint, Token, TokenAccount, TransferChe
 use crate::{Config, RewardsError, User};
 
 const FEE_BPS: u128 = 100; // 1% caller fee
-const MAX_CALLER_FEE: u64 = 1_000_000; // Capped caller fee (0.001 token at 9 decimals)
+const MAX_CALLER_FEE: u64 = 1_000_000; // Capped caller fee
 
 #[derive(Accounts)]
 pub struct Claim<'info> {
@@ -32,7 +32,6 @@ pub fn claim(ctx: Context<Claim>) -> Result<()> {
     let total = ctx.accounts.user.pending;
     require!(total > 0, RewardsError::NothingToPay);
 
-    // Zero out immediately so a claim can never pay twice
     ctx.accounts.user.pending = 0;
 
     let raw_fee = ((total as u128)
