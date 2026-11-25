@@ -34,36 +34,45 @@ describe("04-rewards-without-a-loop", () => {
     assert.equal((after[2] - before[2]).toString(), oneToken().muln(60).toString());
   });
 
-  it("handles rewards between actions, different claim orders, deposit not altering prior owed rewards, and late claimer", async () => {
+  it("handles rewards between actions, different claim orders, deposit not altering prior owed rewards, and an untouched staker claiming last", async () => {
     const [a, b, c] = env.stakers;
     await stake(env, a, oneToken().muln(200));
     await stake(env, b, oneToken().muln(200));
+    await stake(env, c, oneToken().muln(100));
 
     const beforeA = await tokenBalance(env.context, a.tokens);
     const beforeB = await tokenBalance(env.context, b.tokens);
     const beforeC = await tokenBalance(env.context, c.tokens);
 
+    // Reward 1: 100 across total 500 -> a=40, b=40, c=20 (c untouched)
     await addRewards(env, oneToken().muln(100));
-    await stake(env, a, oneToken().muln(400));
+
+    // a deposits 300 more (total becomes 800); must not alter the 40 owed to a before deposit
+    await stake(env, a, oneToken().muln(300));
+
+    // Reward 2: 200 across total 800 (a=500 -> 125, b=200 -> 50, c=100 -> 25; c untouched)
     await addRewards(env, oneToken().muln(200));
 
+    // Active stakers claim in reverse order: b first, then a (c still untouched)
     await claim(env, b);
     await claim(env, a);
 
-    await stake(env, c, oneToken().muln(200));
-    await addRewards(env, oneToken().muln(100));
+    // b unstakes 100 (total becomes 700), Reward 3 arrives: 140 (a=500 -> 100, b=100 -> 20, c=100 -> 20)
+    await unstake(env, b, oneToken().muln(100));
+    await addRewards(env, oneToken().muln(140));
 
+    // a and b claim again; c has NEVER claimed or modified stake until this final claim
+    await claim(env, a);
+    await claim(env, b);
     await claim(env, c);
-    await claim(env, a);
-    await claim(env, b);
 
     const afterA = await tokenBalance(env.context, a.tokens);
     const afterB = await tokenBalance(env.context, b.tokens);
     const afterC = await tokenBalance(env.context, c.tokens);
 
-    assert.equal((afterA - beforeA).toString(), oneToken().muln(260).toString());
-    assert.equal((afterB - beforeB).toString(), oneToken().muln(120).toString());
-    assert.equal((afterC - beforeC).toString(), oneToken().muln(20).toString());
+    assert.equal((afterA - beforeA).toString(), oneToken().muln(265).toString());
+    assert.equal((afterB - beforeB).toString(), oneToken().muln(210).toString());
+    assert.equal((afterC - beforeC).toString(), oneToken().muln(65).toString());
   });
 
   it("handles zero-reward claim cleanly", async () => {
